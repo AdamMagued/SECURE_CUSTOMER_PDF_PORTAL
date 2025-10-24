@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NBK - Customer Lookup</title>
+  <style>
+    body { 
+      font-family: Arial, Helvetica, sans-serif; 
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex; align-items: center; justify-content: center;
+      height: 100vh; margin: 0;
+    }
+    .container { 
+      width: 500px; background: rgba(255,255,255,0.95);
+      padding: 32px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,.3);
+      text-align: center; backdrop-filter: blur(10px);
+    }
+    h2 { color: #333; margin-bottom: 25px; font-size: 24px; font-weight: 600; }
+    input[type=number] { 
+      width: 100%; padding: 12px; border-radius: 8px; border: 2px solid #e1e5e9;
+      margin-bottom: 16px; font-size: 16px; box-sizing: border-box; 
+    }
+    input[type=number]:focus { 
+      outline: none; border-color: #004080; 
+      box-shadow: 0 0 0 3px rgba(0,64,128,0.1); 
+    }
+    .button-grid { 
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; 
+    }
+    .button-full { grid-column: 1 / -1; }
+    button { 
+      background: linear-gradient(135deg, #004080 0%, #0066cc 100%); 
+      color: #fff; padding: 14px 16px; border: none; border-radius: 8px; 
+      cursor: pointer; font-size: 14px; font-weight: 600; 
+      transition: all .3s ease; width: 100%; 
+    }
+    button:hover { 
+      transform: translateY(-2px); 
+      box-shadow: 0 5px 15px rgba(0,64,128,0.4); 
+    }
+    button.pdf-view { 
+      background: linear-gradient(135deg,#dc3545 0%,#e74c3c 100%); 
+    }
+    button.pdf-download { 
+      background: linear-gradient(135deg,#28a745 0%,#20c997 100%); 
+    }
+    button.info-btn { 
+      background: linear-gradient(135deg,#6f42c1 0%,#563d7c 100%); 
+    }
+    button.test-btn { 
+      background: linear-gradient(135deg,#fd7e14 0%,#e55a4e 100%); 
+    }
+    .note { 
+      font-size: 14px; color: #666; margin-top: 16px; text-align: left; 
+      padding: 12px; background: #f8f9fa; border-radius: 6px; 
+      border-left: 4px solid #004080; display: none; 
+      white-space: pre-line;
+    }
+    .note.error { 
+      border-left-color: #dc3545; background: #f8d7da; color: #721c24; 
+    }
+    .note.success { 
+      border-left-color: #28a745; background: #d4edda; color: #155724; 
+    }
+    .note.info { 
+      border-left-color: #6f42c1; background: #e2e3f3; color: #493057; 
+    }
+    .api-info {
+      margin-top: 20px; padding: 15px; background: rgba(23, 162, 184, 0.1);
+      border-radius: 8px; font-size: 13px; text-align: left;
+    }
+    .api-info h4 {
+      color: #17a2b8; margin-bottom: 8px; font-size: 14px;
+    }
+    .api-info code {
+      background: rgba(0,0,0,0.1);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>NBK Customer Lookup</h2>
+    <form id="lookupForm">
+      <input id="userID" type="number" placeholder="Enter Customer ID / Case ID" required min="1" />
+      <div class="button-grid">
+        <button type="button" onclick="viewPdf()" class="pdf-view">View PDF</button>
+        <button type="button" onclick="downloadPdf()" class="pdf-download">Download PDF</button>
+        <button type="button" onclick="getCustomerInfo()" class="info-btn">Customer Info</button>
+        <button type="button" onclick="testLaserFicheApi()" class="test-btn">Test API</button>
+      </div>
+    </form>
+    
+    <div class="api-info">
+      <h4>Laserfiche Integration:</h4>
+      <p>PDFs are fetched from Laserfiche LOS API using secure authentication. 
+         The Customer ID becomes the <code>CaseID</code> in the API call.
+         All communications use RSA/AES encryption for security.</p>
+    </div>
+    
+    <div class="note" id="note"></div>
+  </div>
+
+  <script>
+    // BASE URL including context-path if present
+    function getBaseUrl() {
+      if (window.location.protocol === 'file:') return 'http://localhost:8082/customerdatasearch';
+      if (window.location.pathname.startsWith('/customerdatasearch')) return window.location.origin + '/customerdatasearch';
+      return window.location.origin + '/customerdatasearch';
+    }
+    const baseUrl = getBaseUrl();
+    const publicKeyUrl = `${baseUrl}/keys/public`;
+    const sessionStartUrl = `${baseUrl}/session/start`;
+
+    let aesKey = null;
+    let sessionId = null;
+
+    function showNote(message, type='info') {
+      const n = document.getElementById('note');
+      n.textContent = message;
+      n.className = `note ${type}`;
+      n.style.display = 'block';
+    }
+    function hideNote() { 
+      const n = document.getElementById('note'); 
+      n.style.display = 'none'; 
+      n.textContent = ''; 
+      n.className = 'note'; 
+    }
+
+    function validateCustomerId() {
+      const id = document.getElementById('userID').value.trim();
+      if (!id) { showNote('Please enter a Customer ID first', 'error'); return null; }
+      const n = parseInt(id, 10);
+      if (isNaN(n) || n < 1) { showNote('Please enter a valid Customer ID (greater than 0)', 'error'); return null; }
+      return id;
+    }
+
+    async function startSession() {
+      if (sessionId && aesKey) return;
+      showNote('Initializing secure connection...', 'info');
+
+      // fetch public key (base64 DER)
+      let publicKeyResponse;
+      try {
+        publicKeyResponse = await fetch(publicKeyUrl, { method: 'GET', headers: { 'Accept': 'text/plain' } });
+      } catch (e) {
+        showNote('Cannot connect to server - ensure backend is running at ' + baseUrl, 'error');
+        throw e;
+      }
+      if (!publicKeyResponse.ok) throw new Error('Failed to fetch public key: ' + publicKeyResponse.status);
+
+      const base64Der = await publicKeyResponse.text();
+      const der = Uint8Array.from(atob(base64Der), c => c.charCodeAt(0));
+      const rsaKey = await crypto.subtle.importKey('spki', der.buffer, { name: 'RSA-OAEP', hash: 'SHA-1' }, true, ['encrypt']);
+
+      // generate AES key
+      aesKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+      const rawAes = await crypto.subtle.exportKey('raw', aesKey);
+
+      // encrypt AES with RSA
+      const encrypted = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, rsaKey, rawAes);
+      const encryptedBase64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+
+      // start session
+      const resp = await fetch(sessionStartUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ encryptedKey: encryptedBase64 })
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error('Session start failed: ' + resp.status + ' - ' + text);
+      }
+      const json = await resp.json();
+      sessionId = json.sessionId;
+      showNote('Secure connection established', 'success');
+      setTimeout(hideNote, 1200);
+    }
+
+    async function aesEncrypt(key, data) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const enc = new TextEncoder();
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(data));
+      const combined = new Uint8Array(iv.byteLength + ct.byteLength);
+      combined.set(iv, 0); 
+      combined.set(new Uint8Array(ct), iv.byteLength);
+      return btoa(String.fromCharCode(...combined)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    // View PDF directly in browser
+    async function viewPdf() {
+      const id = validateCustomerId(); 
+      if (!id) return;
+      try { await startSession(); } catch (e) { return; }
+      
+      showNote('Fetching PDF from Laserfiche API...', 'info');
+      const encryptedId = await aesEncrypt(aesKey, id);
+      const pdfViewUrl = `${baseUrl}/api/customers/download/${encryptedId}?sessionId=${encodeURIComponent(sessionId)}&download=false`;
+      window.open(pdfViewUrl, '_blank');
+      showNote('PDF opened in new tab', 'success');
+      setTimeout(hideNote, 2000);
+    }
+
+    // Download PDF file
+    async function downloadPdf() {
+      const id = validateCustomerId(); 
+      if (!id) return;
+      try { await startSession(); } catch (e) { return; }
+      
+      showNote('Preparing PDF download from Laserfiche...', 'info');
+      const encryptedId = await aesEncrypt(aesKey, id);
+      const pdfDownloadUrl = `${baseUrl}/api/customers/download/${encryptedId}?sessionId=${encodeURIComponent(sessionId)}&download=true`;
+      
+      const a = document.createElement('a');
+      a.href = pdfDownloadUrl;
+      a.download = `customer_${id}_document.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      
+      showNote('PDF download started', 'success');
+      setTimeout(hideNote, 2000);
+    }
+
+    // Get customer information
+    async function getCustomerInfo() {
+      const id = validateCustomerId(); 
+      if (!id) return;
+      try { await startSession(); } catch (e) { return; }
+      
+      showNote('Checking customer info...', 'info');
+      const encryptedId = await aesEncrypt(aesKey, id);
+      const infoUrl = `${baseUrl}/api/customers/${encryptedId}/info?sessionId=${encodeURIComponent(sessionId)}`;
+      
+      try {
+        const response = await fetch(infoUrl);
+        const info = await response.json();
+        
+        if (response.ok) {
+          const message = `Customer ID: ${info.customerId}
+Case ID: ${info.caseId}
+PDF Available: ${info.pdfExists ? 'Yes' : 'No'}
+Source: ${info.source}
+${info.pdfSize ? 'Size: ' + Math.round(info.pdfSize / 1024) + ' KB' : ''}
+API: ${info.apiEndpoint}`;
+          showNote(message, 'info');
+        } else {
+          showNote('Error: ' + info.error, 'error');
+        }
+      } catch (e) {
+        showNote('Failed to fetch customer info', 'error');
+      }
+    }
+
+    // Test Laserfiche API connection
+    async function testLaserFicheApi() {
+      const id = validateCustomerId(); 
+      if (!id) return;
+      try { await startSession(); } catch (e) { return; }
+      
+      showNote('Testing Laserfiche API connection...', 'info');
+      const encryptedId = await aesEncrypt(aesKey, id);
+      const testUrl = `${baseUrl}/api/customers/${encryptedId}/test-api?sessionId=${encodeURIComponent(sessionId)}`;
+      
+      try {
+        const response = await fetch(testUrl, { method: 'POST' });
+        const result = await response.json();
+        
+        if (response.ok) {
+          if (result.success) {
+            const message = `✅ API Test Successful!
+Customer ID: ${result.customerId}
+Case ID: ${result.caseId}
+PDF Size: ${Math.round(result.pdfSize / 1024)} KB
+Message: ${result.message}
+API URL: ${result.apiUrl}`;
+            showNote(message, 'success');
+          } else {
+            const message = `❌ API Test Failed
+Customer ID: ${result.customerId}
+Case ID: ${result.caseId}
+Error: ${result.error || 'Unknown error'}
+API URL: ${result.apiUrl}`;
+            showNote(message, 'error');
+          }
+        } else {
+          showNote('❌ API Test Failed: ' + (result.error || 'Unknown error'), 'error');
+        }
+      } catch (e) {
+        showNote('❌ Failed to test Laserfiche API: ' + e.message, 'error');
+      }
+    }
+
+    document.getElementById('lookupForm').addEventListener('submit', async e => { 
+      e.preventDefault(); 
+      await viewPdf(); 
+    });
+    
+    document.getElementById('userID').addEventListener('input', () => hideNote());
+  </script>
+</body>
+</html>
