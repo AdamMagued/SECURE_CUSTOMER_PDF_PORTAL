@@ -1,0 +1,25 @@
+# Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Secrets — never commit these
+application-local.properties
+application-prod.properties
+.env
+*.env
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
